@@ -1,0 +1,7 @@
+# 与 PyTorch 1.10 / Python 3.8 环境兼容
+torch>=1.10
+numpy>=1.19
+scipy>=1.5
+pydicom>=2.2
+nibabel>=3.2
+matplotlib>=3.3
