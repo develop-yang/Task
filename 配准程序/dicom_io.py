@@ -1,4 +1,3 @@
-import glob
 import os
 
 import numpy as np
@@ -38,13 +37,11 @@ def _fix_meta(ds):
 
 
 def load_series(folder):
-    # Windows 文件系统大小写不敏感，*.DCM 和 *.dcm 会匹配到同一批文件，
-    # 这里按真实路径去重，避免切片被读两遍导致层间距算成 0
-    seen = {}
-    for pat in ("*.dcm", "*.DCM"):
-        for f in glob.glob(os.path.join(folder, pat)):
-            seen[os.path.normcase(os.path.realpath(f))] = f
-    files = list(seen.values())
+    # 用 os.listdir 只枚举一次目录，按扩展名(忽略大小写)过滤。
+    # 不要用 glob("*.DCM")+glob("*.dcm")：Windows 大小写不敏感会让同一文件被取两遍，
+    # 切片翻倍后 np.diff(z) 半数为 0 -> 层间距算成 0 -> 重采样除零 -> 全部失效。
+    files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+             if f.lower().endswith(".dcm")]
     if not files:
         raise FileNotFoundError("没找到 DICOM: " + folder)
 

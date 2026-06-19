@@ -56,13 +56,11 @@ def _decode(ds):
 
 def load_series(folder):
     """读取一个 DICOM 序列目录，返回 :class:`Volume`（HU 体数据）。"""
-    # Windows 文件系统大小写不敏感，*.DCM 与 *.dcm 会匹配同一批文件，
-    # 按真实路径去重，避免切片被读两遍把层间距污染成 0
-    seen = {}
-    for pat in ("*.dcm", "*.DCM"):
-        for f in glob.glob(os.path.join(folder, pat)):
-            seen[os.path.normcase(os.path.realpath(f))] = f
-    files = list(seen.values())
+    # 用 os.listdir 只枚举一次目录，按扩展名(忽略大小写)过滤；
+    # 不要用 glob("*.DCM")+glob("*.dcm")：Windows 大小写不敏感会让同一文件取两遍，
+    # 切片翻倍后层间距会被算成 0
+    files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+             if f.lower().endswith(".dcm")]
     if not files:
         raise FileNotFoundError("目录下没有找到 DICOM 文件: %s" % folder)
 
