@@ -130,7 +130,7 @@ def jacobian_stats(model, mask=None):
         for b in range(3):
             J[a, b] = g[b]
     det = np.linalg.det(np.moveaxis(J, [0, 1], [-2, -1]))
-    if mask is not None:
+    if mask is not None and mask.astype(bool).any():
         det = det[mask.astype(bool)]
     return {"min": float(det.min()), "mean": float(det.mean()),
             "neg_fraction": float((det <= 0).mean())}

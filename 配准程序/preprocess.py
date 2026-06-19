@@ -46,25 +46,36 @@ def axial_area_profile(vol, thresh=-300.0):
     return z, area
 
 
-def estimate_z_offset(cbct, pct, dz=1.0):
-    # pCT 的 z 覆盖远大于 CBCT，质心 z 不可比；用横截面积剖面做 1D 互相关定 z
-    zc, ac = axial_area_profile(cbct)
-    zp, ap = axial_area_profile(pct)
-    zc_f = np.arange(zc.min(), zc.max() + dz, dz)
-    zp_f = np.arange(zp.min(), zp.max() + dz, dz)
-    ac_f = np.interp(zc_f, zc, ac)
-    ap_f = np.interp(zp_f, zp, ap)
-    if len(ac_f) >= len(ap_f):
-        return body_centroid(pct)[2] - body_centroid(cbct)[2]
-    ac_n = ac_f - ac_f.mean()
-    best, bs = -1e18, 0
-    for s in range(len(ap_f) - len(ac_f) + 1):
-        w = ap_f[s:s + len(ac_f)]
-        w = w - w.mean()
-        sc = float(np.dot(w, ac_n) / (np.linalg.norm(w) * np.linalg.norm(ac_n) + 1e-6))
-        if sc > best:
-            best, bs = sc, s
-    return float(zp_f[bs] - zc_f[0])
+def _ncc(a, b):
+    a = a - a.mean()
+    b = b - b.mean()
+    d = np.sqrt((a * a).sum() * (b * b).sum())
+    return float((a * b).sum() / d) if d > 1e-6 else -1.0
+
+
+def estimate_z_offset(cbct, pct, search_spacing=5.0, step=5.0):
+    # CBCT(等中心系)与 pCT(床系)不共坐标系，z 相差几百 mm。
+    # 直接在一组候选 z 偏移上重采样 pCT，与 CBCT 比 masked-NCC 取最优，
+    # 比单纯靠横截面积剖面互相关稳健（不会因头颈面积曲线多峰而挑错）。
+    ro, rs, sh = make_reference_grid(cbct, search_spacing)
+    moving = normalize_hu(resample_to_grid(cbct, ro, rs, sh))
+    mask = resample_to_grid(Volume(np.ones_like(cbct.data), cbct.spacing, cbct.origin),
+                            ro, rs, sh, order=0, fill=0.0) > 0.5
+    cxy = body_centroid(pct) - body_centroid(cbct)
+    mv = moving[mask]
+
+    czmin, czmax = cbct.world_extent()[0][2], cbct.world_extent()[1][2]
+    pzmin, pzmax = pct.world_extent()[0][2], pct.world_extent()[1][2]
+    lo, hi = pzmin - czmin, pzmax - czmax            # 让 CBCT 的 z 落进 pCT 范围
+    if lo > hi:
+        lo, hi = hi, lo
+    best, best_off = -2.0, (lo + hi) / 2.0
+    for off in np.arange(lo, hi + 1e-6, step):
+        fx = normalize_hu(resample_to_grid(pct, ro + np.array([cxy[0], cxy[1], off]), rs, sh))
+        s = _ncc(mv, fx[mask])
+        if s > best:
+            best, best_off = s, float(off)
+    return best_off
 
 
 def prepare_pair(cbct, pct, spacing_mm=3.0):
