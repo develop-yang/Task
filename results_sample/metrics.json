@@ -1,11 +1,25 @@
 {
-  "ncc_before": 0.07903838157653809,
-  "ncc_after": 0.6131650805473328,
-  "mse_before": 0.06787130981683731,
-  "mse_after": 0.004440992139279842,
-  "bone_dice_before": 0.1276370579980215,
-  "bone_dice_after": 0.9189164328749483,
-  "jacobian_min": -7.1341151428142915,
-  "jacobian_mean": 0.7563368343649258,
-  "jacobian_neg_fraction": 0.003329389347715669
+  "rigid_only": {
+    "ncc_before": 0.07903838157653809,
+    "ncc_after": 0.4087105989456177,
+    "mse_before": 0.06787130981683731,
+    "mse_after": 0.01012528594583273,
+    "bone_dice_before": 0.1276370579980215,
+    "bone_dice_after": 0.8316663767611758
+  },
+  "deform": {
+    "ncc_before": 0.07903838157653809,
+    "ncc_after": 0.4648284316062927,
+    "mse_before": 0.06787130981683731,
+    "mse_after": 0.008640655316412449,
+    "bone_dice_before": 0.1276370579980215,
+    "bone_dice_after": 0.8745232058207474
+  },
+  "jacobian": {
+    "min": 0.5055356343231371,
+    "mean": 0.9293047835469966,
+    "neg_fraction": 0.0
+  },
+  "deform_bone_dice_gain": 0.042856829059571555,
+  "primary": "rigid+deform"
 }
