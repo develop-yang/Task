@@ -23,7 +23,7 @@ DARK = RGBColor(0x22, 0x22, 0x22)
 GRAY = RGBColor(0x5A, 0x5A, 0x5A)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 LIGHT = RGBColor(0xE8, 0xED, 0xF5)
-FONT = "WenQuanYi Zen Hei"
+FONT = "Microsoft YaHei"  # Windows 常见中文字体；缺失时 PowerPoint 自动回退
 
 SW, SH = 13.333, 7.5  # 16:9 inches
 
@@ -195,15 +195,15 @@ def build(out):
     # 3. 为什么不平凡
     s = blank(prs)
     add_title(s, "为什么不平凡：CBCT 的物理特性决定方法")
-    add_image_fit(s, os.path.join(fig, "coord_offset.png"), 0.5, 1.4, 12.3, 3.3)
+    add_image_fit(s, os.path.join(fig, "coord_offset.png"), 0.5, 1.35, 12.3, 2.9)
     add_bullets(s, [
         ("世界坐标系不同：CBCT 以治疗机等中心为原点、pCT 以 CT 床为原点，"
          "z 相差约 800 mm，DICOM 头无法直接对齐。", 0),
         ("X 射线散射 → cupping 伪影，软组织区 HU 向中心塌陷。", 0),
         ("HU 标定不准：CBCT 的 CT 值与计划 CT 不可直接比较。", 0),
         ("FOV 截断：CBCT 视野小，边缘信息缺失。", 0),
-        ("→ 因此需要：稳健初始化 + 对灰度差异鲁棒的相似性 + 仅在 CBCT 视野内评估。", 0),
-    ], 0.6, 4.9, 12.2, 2.4, size=15)
+        ("→ 需要：稳健初始化 + 对灰度差异鲁棒的相似性 + 仅在 CBCT 视野内评估。", 0),
+    ], 0.6, 4.5, 12.2, 2.8, size=14)
 
     # 4. 方法总览（流程图）
     s = blank(prs)
@@ -299,7 +299,8 @@ def build(out):
     add_title(s, "收敛过程与形变合法性")
     add_image_fit(s, os.path.join(out, "loss_curve.png"), 0.5, 1.5, 7.0, 5.0)
     add_image_fit(s, os.path.join(fig, "jacobian_map.png"), 7.7, 1.5, 5.2, 5.0)
-    add_note(s, "左：两阶段 loss 收敛；右：形变场 Jacobian 行列式中心层，全为正。")
+    add_note(s, "左：两阶段 loss 收敛；右：形变场 Jacobian 行列式中心层，"
+                "绝大多数为正（全局负值占比 0.33%）。")
 
     # 10. 小结与局限
     s = blank(prs)

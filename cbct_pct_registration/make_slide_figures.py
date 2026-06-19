@@ -223,8 +223,9 @@ def fig_jacobian_map(det, mask, path):
     sl[mask[z] <= 0.5] = np.nan
     fig, ax = plt.subplots(figsize=(6, 5.5))
     im = ax.imshow(np.rot90(sl), cmap="RdBu_r", vmin=0.0, vmax=2.0)
-    ax.set_title("形变场 Jacobian 行列式（中心轴位层）\n全为正 → 微分同胚、无折叠",
-                 fontsize=12)
+    ax.set_title("形变场 Jacobian 行列式（中心轴位层）\n"
+                 "绝大多数为正（负值占比0.33%）→ 近微分同胚、几乎无折叠",
+                 fontsize=11)
     ax.axis("off")
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label("det(J)", fontsize=11)
@@ -243,8 +244,11 @@ def main():
     figdir = os.path.join(args.out, "figures")
     os.makedirs(figdir, exist_ok=True)
 
-    ckpt = torch.load(os.path.join(args.out, "transform.pt"),
-                      map_location="cpu")
+    ckpt_path = os.path.join(args.out, "transform.pt")
+    try:  # torch>=2.6 默认 weights_only=True，需关掉以载入 numpy 几何信息
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except TypeError:  # torch 1.10 没有该参数
+        ckpt = torch.load(ckpt_path, map_location="cpu")
     with open(os.path.join(args.out, "metrics.json")) as f:
         metrics = json.load(f)
 
