@@ -17,15 +17,21 @@ AIR_HU = -1000.0  # 视野外填充值（空气）
 
 
 def make_reference_grid(vol_for_extent, spacing_mm):
-    """根据给定体数据的世界包围盒，构造各向同性参考网格。
+    """根据给定体数据的世界包围盒，构造**立方体**各向同性参考网格。
+
+    立方体（D=H=W）+ 各向同性体素，保证 ``F.affine_grid`` 归一化坐标
+    [-1,1] 在三个轴上对应相同的物理长度，于是归一化旋转 == 物理刚体旋转，
+    不会沿 z 引入剪切（修复“归一化坐标下非真刚体”的问题）。
 
     返回 (ref_origin(x,y,z), ref_spacing(x,y,z), shape(z,y,x))。
     """
     mn, mx = vol_for_extent.world_extent()
+    center = (mn + mx) / 2.0
     spacing = np.array([spacing_mm, spacing_mm, spacing_mm], np.float64)
     size_xyz = np.ceil((mx - mn) / spacing).astype(int) + 1
-    shape_zyx = (int(size_xyz[2]), int(size_xyz[1]), int(size_xyz[0]))
-    return mn.copy(), spacing, shape_zyx
+    n = int(size_xyz.max())  # 取最大边长，做成立方体
+    ref_origin = center - (n - 1) / 2.0 * spacing
+    return ref_origin, spacing, (n, n, n)
 
 
 def resample_to_grid(vol, ref_origin, ref_spacing, ref_shape, order=1,
@@ -72,21 +78,71 @@ def body_centroid_world(vol, thresh=-400.0):
     return vol.origin + c_xyz * vol.spacing
 
 
+def axial_area_profile(vol, thresh=-300.0):
+    """每层身体横截面积（HU>thresh 的体素数）随物理 z 的剖面。
+
+    返回 (z_world(每层世界 z 坐标), area(每层面积))。
+    """
+    area = (vol.data > thresh).sum(axis=(1, 2)).astype(np.float64)  # (z,)
+    z = vol.origin[2] + np.arange(vol.data.shape[0]) * vol.spacing[2]
+    return z, area
+
+
+def estimate_z_offset(cbct, pct, dz=1.0, thresh=-300.0):
+    """用身体横截面积剖面的 1D 归一化互相关，估计 z 方向初始偏移(mm)。
+
+    pCT 的 z 覆盖远大于 CBCT，二者“质心 z”落在不同解剖范围上并不可比，
+    直接用质心做 z 对齐会偏。这里把 CBCT 的面积剖面在 pCT 的面积剖面上滑动，
+    取归一化互相关最大的位置，得到稳健的 z 初值。
+
+    返回 offset_z，使得参考网格（CBCT 坐标系）中世界 z 处应采样 pCT 的
+    (z + offset_z) 位置。
+    """
+    zc, ac = axial_area_profile(cbct, thresh)
+    zp, ap = axial_area_profile(pct, thresh)
+
+    # 重采样到统一的细 z 网格
+    zc_fine = np.arange(zc.min(), zc.max() + dz, dz)
+    zp_fine = np.arange(zp.min(), zp.max() + dz, dz)
+    ac_f = np.interp(zc_fine, zc, ac)
+    ap_f = np.interp(zp_fine, zp, ap)
+
+    if len(ac_f) >= len(ap_f):  # CBCT 比 pCT 还长，退化为质心 z
+        return body_centroid_world(pct)[2] - body_centroid_world(cbct)[2]
+
+    ac_n = ac_f - ac_f.mean()
+    ac_norm = np.linalg.norm(ac_n) + 1e-6
+    n = len(ac_n)
+
+    best_score, best_s = -np.inf, 0
+    for s in range(len(ap_f) - n + 1):
+        w = ap_f[s:s + n]
+        w_n = w - w.mean()
+        score = float(np.dot(w_n, ac_n) / (np.linalg.norm(w_n) * ac_norm + 1e-6))
+        if score > best_score:
+            best_score, best_s = score, s
+
+    # CBCT 的起始 z (zc_fine[0]) 对应 pCT 世界 z 为 zp_fine[best_s]
+    return float(zp_fine[best_s] - zc_fine[0])
+
+
 def prepare_pair(cbct, pct, spacing_mm=1.5, align_centroid=True):
     """生成公共网格上的 (moving=CBCT, fixed=pCT) 及掩膜。
 
     CBCT（治疗机等中心坐标系）与 pCT（CT 床坐标系）通常不在同一世界坐标系，
-    因此默认先按“身体质心”做一次初始平移对齐，把两者拉到大致重叠，
-    再交给 PyTorch 做刚体 + 形变细化。
+    因此默认先做一次初始平移对齐：x、y 用身体质心，z 用横截面积剖面的 1D
+    互相关（更稳健），把两者拉到大致重叠，再交给 PyTorch 做刚体 + 形变细化。
 
     返回字典，含归一化体数据、原始 HU 体数据、参考几何、CBCT 视野掩膜。
     """
     ref_origin, ref_spacing, ref_shape = make_reference_grid(cbct, spacing_mm)
 
-    # 以 CBCT 包围盒为公共网格；采样 pCT 时加上质心偏移，使其落入该网格
+    # 以 CBCT 立方体网格为公共网格；采样 pCT 时加上初始偏移，使其落入该网格
     offset = np.zeros(3)
     if align_centroid:
-        offset = body_centroid_world(pct) - body_centroid_world(cbct)
+        c = body_centroid_world(pct) - body_centroid_world(cbct)
+        offset[0], offset[1] = c[0], c[1]          # x, y 用质心
+        offset[2] = estimate_z_offset(cbct, pct)    # z 用 1D 互相关
 
     moving_hu = resample_to_grid(cbct, ref_origin, ref_spacing, ref_shape)
     fixed_hu = resample_to_grid(pct, ref_origin + offset, ref_spacing, ref_shape)

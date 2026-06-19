@@ -2,8 +2,17 @@
 data/
 results/
 results_test/
+results_baseline/
+# 大文件一律忽略（即使在 results_sample/ 内）
 *.nii.gz
 *.pt
 __pycache__/
 *.pyc
 torch-*.whl
+
+# 例外：样例结果中的轻量产物入库，便于评审 clone 后直接查看
+!results_sample/
+!results_sample/overlay.png
+!results_sample/loss_curve.png
+!results_sample/metrics.json
+!results_sample/rigid_transform.txt

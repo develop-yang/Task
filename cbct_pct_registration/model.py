@@ -40,10 +40,13 @@ class RegistrationModel(nn.Module):
     flow_downsample: 位移场相对全分辨率的下采样倍数（控制平滑度与显存）。
     """
 
-    def __init__(self, size, flow_downsample=4, allow_scale=True):
+    def __init__(self, size, flow_downsample=4, allow_scale=False,
+                 diffeomorphic=True, int_steps=7):
         super().__init__()
         self.size = size
         self.allow_scale = allow_scale
+        self.diffeomorphic = diffeomorphic
+        self.int_steps = int_steps
 
         # 刚体参数：3 旋转 + 3 平移（归一化坐标）
         self.rot = nn.Parameter(torch.zeros(3))
@@ -72,10 +75,31 @@ class RegistrationModel(nn.Module):
                              align_corners=True)  # (1, D, H, W, 3)
 
     # ---- 形变部分 ----
+    def _identity_grid(self):
+        theta = torch.eye(3, 4, device=self.rot.device, dtype=self.rot.dtype)[None]
+        return F.affine_grid(theta, (1, 1) + tuple(self.size), align_corners=True)
+
+    def _integrate(self, vel):
+        """对速度场做 scaling-and-squaring 积分，得到微分同胚位移场。
+
+        vel: (1, 3, D, H, W)，归一化坐标下的速度。返回同形位移场。
+        保证（速度足够小、步数足够）变换可逆、Jacobian 处处为正，几乎无折叠。
+        """
+        disp = vel / (2 ** self.int_steps)
+        grid = self._identity_grid()  # (1, D, H, W, 3)
+        for _ in range(self.int_steps):
+            d_perm = disp.permute(0, 2, 3, 4, 1)  # (1, D, H, W, 3)
+            sampled = F.grid_sample(disp, grid + d_perm, mode="bilinear",
+                                    padding_mode="border", align_corners=True)
+            disp = disp + sampled
+        return disp
+
     def full_flow(self):
-        """把低分辨率位移场上采样到全分辨率，返回 (1, D, H, W, 3)。"""
+        """把低分辨率速度/位移场上采样到全分辨率，返回 (1, D, H, W, 3)。"""
         flow = F.interpolate(self.flow_lowres, size=tuple(self.size),
                              mode="trilinear", align_corners=True)
+        if self.diffeomorphic:
+            flow = self._integrate(flow)  # 速度场 -> 微分同胚位移场
         return flow.permute(0, 2, 3, 4, 1)  # -> (1, D, H, W, 3)
 
     def sampling_grid(self, use_flow=True):

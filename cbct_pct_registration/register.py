@@ -22,8 +22,8 @@ def _downsample(t, factor):
 
 def register(moving, fixed, mask=None, device="cpu",
              rigid_iters=300, deform_iters=300,
-             rigid_lr=0.01, deform_lr=0.05,
-             ncc_win=9, reg_weight=1.0, allow_scale=True,
+             rigid_lr=0.01, deform_lr=0.02,
+             ncc_win=9, reg_weight=3.0, allow_scale=False,
              flow_downsample=4, pyramid=(4, 2, 1), verbose=True):
     """对公共网格上的 moving/fixed 体数据做刚体 + 形变配准。
 
@@ -97,3 +97,116 @@ def evaluate(moving, fixed, warped, mask=None):
         "mse_after": float(masked_mse(t(warped), t(fixed), mk)),
     }
     return out
+
+
+# ----------------------------------------------------------------------------
+# 与优化目标(LNCC)无关的独立验证指标 + 物理刚体参数导出
+# ----------------------------------------------------------------------------
+
+def _dice(a, b):
+    a = a.astype(bool)
+    b = b.astype(bool)
+    inter = np.logical_and(a, b).sum()
+    denom = a.sum() + b.sum()
+    return float(2.0 * inter / denom) if denom > 0 else 0.0
+
+
+def bone_dice(moving_hu, fixed_hu, warped_hu, mask=None, thresh=200.0):
+    """骨结构 Dice（独立于 LNCC 目标的结构一致性指标）。
+
+    在 HU 空间按 >thresh 取骨掩膜，只在 CBCT 视野(mask)内统计配准前/后 Dice。
+    """
+    if mask is not None:
+        m = mask.astype(bool)
+    else:
+        m = np.ones_like(fixed_hu, bool)
+    bone_fixed = (fixed_hu > thresh) & m
+    bone_moving = (moving_hu > thresh) & m
+    bone_warped = (warped_hu > thresh) & m
+    return {
+        "bone_dice_before": _dice(bone_moving, bone_fixed),
+        "bone_dice_after": _dice(bone_warped, bone_fixed),
+    }
+
+
+def decompose_euler(R):
+    """把旋转矩阵分解为 (rx, ry, rz)（弧度），约定 R = Rz @ Ry @ Rx。"""
+    sy = -R[2, 0]
+    sy = max(-1.0, min(1.0, float(sy)))
+    ry = np.arcsin(sy)
+    if abs(sy) < 0.99999:
+        rx = np.arctan2(R[2, 1], R[2, 2])
+        rz = np.arctan2(R[1, 0], R[0, 0])
+    else:  # 万向锁
+        rx = np.arctan2(-R[1, 2], R[1, 1])
+        rz = 0.0
+    return np.array([rx, ry, rz])
+
+
+def rigid_to_physical(model, ref_origin, ref_spacing, ref_shape):
+    """把归一化坐标下的刚体参数换算成物理单位(mm/度)。
+
+    立方体各向同性网格下，affine_grid 的归一化旋转就是物理旋转。
+    采样网格变换 theta 把 fixed(pCT) 坐标映射到 moving(CBCT) 坐标：
+        world_moving = R · world_fixed + T
+    其中 T = c - R·c + s·t_norm，c 为网格中心世界坐标，s 为半物理边长。
+    临床摆位关心的是 CBCT->pCT 的修正量，即其逆变换。
+    """
+    R = model.affine_theta().detach().cpu().numpy()[0, :, :3]
+    scale = float(np.cbrt(abs(np.linalg.det(R))))
+    Rrot = R / scale if scale > 1e-6 else R  # 去掉缩放得到纯旋转
+    t_norm = model.trans.detach().cpu().numpy()
+
+    n = ref_shape[0]
+    s = (n - 1) * float(ref_spacing[0]) / 2.0  # 半物理边长(mm)，三轴相同
+    c = np.asarray(ref_origin) + (n - 1) / 2.0 * np.asarray(ref_spacing)
+
+    # fixed(pCT) -> moving(CBCT)
+    T = c - Rrot @ c + s * t_norm
+    # moving(CBCT) -> fixed(pCT)，即摆位修正
+    R_inv = Rrot.T
+    T_inv = -R_inv @ T
+
+    return {
+        "scale": scale,
+        "rotation_deg_cbct_to_pct": np.degrees(decompose_euler(R_inv)),
+        "translation_mm_cbct_to_pct": T_inv,
+        "rotation_deg_pct_to_cbct": np.degrees(decompose_euler(Rrot)),
+        "translation_mm_pct_to_cbct": T,
+        "matrix_cbct_to_pct": np.vstack([np.hstack([R_inv, T_inv[:, None]]),
+                                         [0, 0, 0, 1]]),
+    }
+
+
+def jacobian_stats(model, mask=None):
+    """统计**形变场**(微分同胚位移)的雅可比行列式。
+
+    刚体部分是旋转(det≈1)，这里只评估形变映射 id+位移 的折叠情况。
+    负值=折叠=非法形变。返回 min / mean / 负值占比。
+    """
+    with torch.no_grad():
+        grid = (model._identity_grid() + model.full_flow()
+                ).detach().cpu().numpy()[0]
+    D, H, W = model.size
+    # 归一化坐标(x,y,z) -> 体素坐标
+    vx = (grid[..., 0] + 1) / 2 * (W - 1)
+    vy = (grid[..., 1] + 1) / 2 * (H - 1)
+    vz = (grid[..., 2] + 1) / 2 * (D - 1)
+    # phi 分量按 (z,y,x) 排列，对输入轴 (0=D=z,1=H=y,2=W=x) 求梯度
+    phi = [vz, vy, vx]
+    J = np.empty((3, 3) + (D, H, W), np.float64)
+    for a in range(3):
+        g = np.gradient(phi[a])
+        for b in range(3):
+            J[a, b] = g[b]
+    Jm = np.moveaxis(J, [0, 1], [-2, -1])  # (D,H,W,3,3)
+    det = np.linalg.det(Jm)
+
+    if mask is not None:
+        m = mask.astype(bool)
+        det = det[m]
+    return {
+        "jacobian_min": float(det.min()),
+        "jacobian_mean": float(det.mean()),
+        "jacobian_neg_fraction": float((det <= 0).mean()),
+    }
