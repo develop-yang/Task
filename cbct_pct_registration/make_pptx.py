@@ -111,7 +111,14 @@ def bullets(slide, items, left, top, width, height, size=S_BODY):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.line_spacing = 1.2
         p.space_after = Pt(10)
-        r = p.add_run(); r.text = "▪  " + txt
+        # 悬挂缩进 + 原生 ▪ 项目符号（续行对齐到首字）
+        pPr = p._p.get_or_add_pPr()
+        pPr.set("marL", str(Pt(20)))
+        pPr.set("indent", str(-Pt(20)))
+        buFont = pPr.makeelement(qn("a:buFont"), {}); buFont.set("typeface", FONT)
+        buChar = pPr.makeelement(qn("a:buChar"), {}); buChar.set("char", "▪")
+        pPr.append(buFont); pPr.append(buChar)
+        r = p.add_run(); r.text = txt
         _font(r, size, color=TEXT)
 
 
@@ -163,7 +170,8 @@ def image_cover(slide, path, left, top, bw, bh):
                                  Inches(bh))
 
 
-def table(slide, rows, left, top, width, height, col_w=None, num_cols=None):
+def table(slide, rows, left, top, width, height, col_w=None, num_cols=None,
+          size=15):
     nr, nc = len(rows), len(rows[0])
     gt = slide.shapes.add_table(nr, nc, Inches(left), Inches(top),
                                 Inches(width), Inches(height)).table
@@ -187,7 +195,7 @@ def table(slide, rows, left, top, width, height, col_w=None, num_cols=None):
             p = cell.text_frame.paragraphs[0]
             r = p.add_run(); r.text = str(val)
             head = i == 0
-            _font(r, 15, bold=head, color=WHITE if head else TEXT)
+            _font(r, size, bold=head, color=WHITE if head else TEXT)
             if num_cols and j in num_cols and not head:
                 p.alignment = PP_ALIGN.RIGHT
             cell.fill.solid()
@@ -223,36 +231,45 @@ def build(out):
 
     # ---- 1. 封面 ----
     s = blank(prs)
-    image_cover(s, os.path.join(fig, "checkerboard.png"), 0, 0, 5.0, SH)
+    hero = os.path.join(fig, "hero.png")
+    if not os.path.exists(hero):
+        hero = os.path.join(fig, "checkerboard.png")
+    image_cover(s, hero, 0, 0, 5.0, SH)
     _rect(s, MSO_SHAPE.RECTANGLE, 5.0, 0, 0.06, SH, fill=ACCENT)
-    tb = _box(s, 5.6, 2.35, 7.2, 3.2)
+    # 标题 + 副标题
+    tb = _box(s, 5.6, 2.35, 7.2, 1.7)
     tf = tb.text_frame
     r = tf.paragraphs[0].add_run(); r.text = "CBCT → pCT 医学影像配准"
     _font(r, 36, bold=True, color=ACCENT)
     p = tf.add_paragraph(); r = p.add_run()
     r.text = "刚体配准为主 · 受控微分同胚形变细化"
     _font(r, S_BODY, color=GRAY2)
-    _rect(s, MSO_SHAPE.RECTANGLE, 5.62, 3.7, 2.2, 0.04, fill=ACCENT)
-    for t in ["病例 M24557", "汇报人：杨同学", "2026-06-18"]:
-        p = tf.add_paragraph(); p.space_before = Pt(4)
+    # 元信息三行（独立文本框，避免与分隔线重叠）
+    mb = _box(s, 5.6, 4.05, 7.2, 1.3)
+    mtf = mb.text_frame
+    for i, t in enumerate(["病例 M24557", "汇报人：杨同学", "2026-06-18"]):
+        p = mtf.paragraphs[0] if i == 0 else mtf.add_paragraph()
+        p.space_after = Pt(3)
         r = p.add_run(); r.text = t
         _font(r, 14, color=TEXT)
+    # 分隔线置于三行元信息下方
+    _rect(s, MSO_SHAPE.RECTANGLE, 5.62, 5.45, 2.2, 0.035, fill=ACCENT)
 
     # ---- 2. 任务与数据 ----
     s = content(prs, "任务与数据", 2)
-    image(s, os.path.join(fig, "data_overview.png"), MARGIN, 1.4, 7.1, 5.0,
+    image(s, os.path.join(fig, "data_overview.png"), MARGIN, 1.4, 6.7, 5.0,
           caption="CBCT / pCT 各取 轴/冠/矢 三视图（统一窗位）")
     rows = [["", "pCT 计划CT", "CBCT 锥束CT"],
             ["设备", "Philips", "Elekta XVI"],
             ["矩阵", "512×512×112", "270×270×128"],
             ["体素 mm", "1.16×1.16×3.0", "1.0×1.0×1.0"],
             ["坐标系", "床 z≈-800", "等中心 z≈0"]]
-    table(s, rows, 8.1, 1.55, 4.5, 2.2, col_w=[1.2, 1.7, 1.6], num_cols=[])
+    table(s, rows, 7.55, 1.55, 5.05, 2.2, col_w=[1.0, 2.05, 2.0], size=12)
     bullets(s, [
         "不同 Frame of Reference（坐标不重叠）",
         "灰度不一致（散射 / HU 标定差异）",
         "分辨率与 FOV 不同（CBCT 视野小）",
-    ], 8.1, 4.15, 4.5, 2.4)
+    ], 7.55, 4.15, 5.05, 2.4)
     notes(s, "同一病人 M24557 的计划CT与治疗位锥束CT。三大难点决定方法："
               "坐标系不同→稳健初始化；灰度不一致→对线性差异鲁棒的 LNCC；"
               "FOV 不同→只在 CBCT 视野内评估。")
@@ -279,8 +296,10 @@ def build(out):
     band_y = y + bh / 2
     for i, st in enumerate(steps):
         if i < n - 1:
-            _rect(s, MSO_SHAPE.RECTANGLE, x + bw, band_y - 0.012,
-                  gap, 0.024, fill=ACCENT)
+            _rect(s, MSO_SHAPE.RECTANGLE, x + bw - 0.02, band_y - 0.025,
+                  gap + 0.04, 0.05, fill=ACCENT)
+            _rect(s, MSO_SHAPE.CHEVRON, x + bw + gap / 2 - 0.11,
+                  band_y - 0.11, 0.22, 0.22, fill=ACCENT)
         box = _rect(s, MSO_SHAPE.ROUNDED_RECTANGLE, x, y, bw, bh,
                     fill=ACCENT, line=ACCENT)
         tf = box.text_frame; tf.word_wrap = True
@@ -375,7 +394,11 @@ def build(out):
         "针对 CBCT 物理特性：稳健初始化 / LNCC / FOV 掩膜 / 真刚体",
         "独立骨 Dice 验证：0.128 → %.3f（仅刚体）" % rg["bone_dice_after"],
         "局限：3mm 网格、未做散射/HU 校正、单病例、未做标志点 TRE",
-    ], MARGIN, 1.8, 12.0, 4.6)
+    ], MARGIN, 2.3, 7.3, 3.6)
+    hero10 = os.path.join(fig, "hero.png")
+    if os.path.exists(hero10):
+        image(s, hero10, 8.3, 2.0, 4.3, 4.0,
+              caption="配准后（轴位：pCT + CBCT 骨结构）")
     notes(s, "做了什么 / 验证了什么 / 局限与展望。受网格分辨率限制，本结果在 3mm 各向"
               "同性网格上计算（CPU 单线程，1.5mm 全分辨率刚体单次即需 1 小时以上）；"
               "更细网格可进一步提升锐度与刚体精度。可拓展：散射/HU 定量校正、多病例"

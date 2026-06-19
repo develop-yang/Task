@@ -191,6 +191,25 @@ def fig_checkerboard(data, warped, path):
     plt.close(fig)
 
 
+def fig_hero(data, warped, path):
+    """封面用的干净单图：配准后轴位，pCT 灰底 + 配准后 CBCT 骨结构(强调色)叠加。"""
+    fx_hu, mask = data["fixed_hu"], data["mask"]
+    warped_hu = warped * 2000.0 - 1000.0
+    z = fx_hu.shape[0] // 2
+    base = np.clip(fx_hu[z], -500, 1000)
+    bone = (warped_hu[z] > 200) & (mask[z] > 0.5)
+    overlay = np.ma.masked_where(~bone, np.ones_like(base))
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(np.rot90(base), cmap="gray")
+    from matplotlib.colors import ListedColormap
+    ax.imshow(np.rot90(overlay), cmap=ListedColormap([ACCENT]), alpha=0.55,
+              vmin=0, vmax=1)
+    ax.axis("off")
+    plt.subplots_adjust(0, 0, 1, 1)
+    plt.savefig(path, dpi=DPI, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+
+
 def fig_difference(data, warped, path):
     mv, fx = data["moving"], data["fixed"]
     names = ["轴位", "冠状位"]
@@ -293,6 +312,7 @@ def main():
     fig_zinit_xcorr(cbct, pct, os.path.join(figdir, "zinit_xcorr.png"))
     fig_checkerboard(data, warped_primary, os.path.join(figdir, "checkerboard.png"))
     fig_difference(data, warped_primary, os.path.join(figdir, "difference.png"))
+    fig_hero(data, warped_primary, os.path.join(figdir, "hero.png"))
     fig_metrics_bar(metrics["rigid_only"], os.path.join(figdir, "metrics_bar.png"))
     fig_jacobian_map(det, data["mask"], os.path.join(figdir, "jacobian_map.png"),
                      jac=metrics.get("jacobian"))
