@@ -15,10 +15,13 @@
   （需要时 `--scale` 作为对照）。
 - **稳健 z 初始化**：pCT 的 z 覆盖远大于 CBCT，z 质心不可比；改用两者“横截面积
   随 z 的剖面”做 1D 归一化互相关定 z 偏移。
-- **无折叠形变**：形变用**微分同胚**（速度场 scaling-and-squaring 积分）+ 扩散正则，
-  保证位移场 Jacobian 几乎处处为正（负值占比≈0）。
+- **刚体为主结果**：本例为戴面罩头颈、近似刚体，刚体配准即给出临床摆位修正
+  （平移 mm + 旋转度，见 `rigid_transform.txt`）。
+- **无折叠形变（可选细化）**：形变用**微分同胚**（速度场 scaling-and-squaring 积分）
+  + 强扩散正则 + 粗控制网格 + 速度场高斯平滑，做“小幅平滑细化”而非剧烈揉变，
+  保证位移场 Jacobian **处处为正、无折叠**。
 - **独立验证指标**（不拿优化目标 LNCC 当评价，避免循环论证）：
-  - **骨结构 Dice**（HU>200 取骨掩膜，CBCT 视野内，配准前/后）；
+  - **骨结构 Dice**（HU>200 取骨掩膜，CBCT 视野内，给出仅刚体 / +形变两套）；
   - **形变场 Jacobian** 行列式的 min / 均值 / 负值占比。
 
 ## 数据
@@ -62,14 +65,18 @@ python -m cbct_pct_registration.main \
 | `--rigid-iters` | 300 | 刚体阶段每个分辨率层的迭代数 |
 | `--deform-iters` | 300 | 形变阶段迭代数 |
 | `--ncc-win` | 9 | 局部归一化互相关 (LNCC) 窗口边长 |
-| `--reg-weight` | 6.0 | 形变场平滑正则权重，越大形变越平滑、折叠越少 |
-| `--deform-lr` | 0.02 | 形变阶段学习率 |
+| `--reg-weight` | 20 | 形变场平滑正则权重，越大形变越平滑、折叠越少 |
+| `--deform-lr` | 0.01 | 形变阶段学习率 |
+| `--flow-downsample` | 8 | 形变控制网格下采样，越大越平滑 |
+| `--smooth-sigma` | 0.8 | 速度场高斯平滑（低分辨率体素） |
 | `--scale` | 关 | 额外开启各向同性缩放（默认纯 6 自由度刚体） |
 | `--bone-thresh` | 200 | 骨 Dice 的 HU 阈值 |
 | `--device` | 自动 | `cpu` 或 `cuda` |
 
-> 已提交一份样例结果在 `results_sample/`（overlay.png + metrics.json +
-> rigid_transform.txt），clone 下来不用跑就能看到配准效果。
+> 已提交样例结果在 `results_sample/`：汇报 deck（`CBCT_pCT_配准汇报.pptx`）、
+> `figures/`、`metrics.json`、`rigid_transform.txt`，clone 下来不用跑就能看。
+> 生成图与 deck：`python -m cbct_pct_registration.make_slide_figures` 与
+> `python -m cbct_pct_registration.make_pptx`。
 
 ## 方法流程
 
@@ -81,11 +88,11 @@ python -m cbct_pct_registration.main \
 3. **刚体配准**（`model.py` / `register.py`）：用 `F.affine_grid` +
    `F.grid_sample` 优化旋转/平移（默认 6-DOF，不含缩放），采用 **多分辨率金字塔**
    (4×→2×→1×) 扩大捕获范围，相似性度量为 LNCC（对 CBCT/pCT 灰度差异鲁棒）。
-4. **形变配准**：冻结刚体，优化低分辨率**速度场**，经 scaling-and-squaring 积分得
-   微分同胚位移场（三线性上采样到全分辨率），LNCC + 扩散正则。
+4. **形变配准（可选细化）**：冻结刚体，优化低分辨率**速度场**（高斯平滑 + 强正则
+   + 粗网格），经 scaling-and-squaring 积分得微分同胚位移场，只做小幅平滑细化。
 5. **输出**（`results/`）：
    - `rigid_transform.txt` —— **刚体配准的核心答案**：平移(mm)+旋转(度)+4×4 矩阵
-   - `metrics.json` —— LNCC / MSE / 骨 Dice / 形变 Jacobian 统计
+   - `metrics.json` —— 仅刚体 / +形变 两套（LNCC、骨 Dice）+ 形变 Jacobian 统计
    - `overlay.png` —— 三视图棋盘格对比（配准前/后）+ 差异图
    - `loss_curve.png` —— 两阶段 loss 曲线
    - `warped_cbct.nii.gz` —— 配准后的 CBCT（已对齐到 pCT 网格）

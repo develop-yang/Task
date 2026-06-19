@@ -41,12 +41,13 @@ class RegistrationModel(nn.Module):
     """
 
     def __init__(self, size, flow_downsample=4, allow_scale=False,
-                 diffeomorphic=True, int_steps=7):
+                 diffeomorphic=True, int_steps=7, smooth_sigma=0.0):
         super().__init__()
         self.size = size
         self.allow_scale = allow_scale
         self.diffeomorphic = diffeomorphic
         self.int_steps = int_steps
+        self.smooth_sigma = smooth_sigma  # 速度场高斯平滑(低分辨率体素)，>0 时更平滑无折叠
 
         # 刚体参数：3 旋转 + 3 平移（归一化坐标）
         self.rot = nn.Parameter(torch.zeros(3))
@@ -75,6 +76,30 @@ class RegistrationModel(nn.Module):
                              align_corners=True)  # (1, D, H, W, 3)
 
     # ---- 形变部分 ----
+    @staticmethod
+    def _gauss1d(sigma, device, dtype):
+        radius = max(1, int(round(3 * sigma)))
+        x = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+        k = torch.exp(-0.5 * (x / sigma) ** 2)
+        return k / k.sum()
+
+    def _smooth(self, vel):
+        """对速度场做可分离 3D 高斯平滑（抑制尖锐梯度→避免折叠）。"""
+        s = self.smooth_sigma
+        if not s or s <= 0:
+            return vel
+        k = self._gauss1d(s, vel.device, vel.dtype)
+        n = k.numel()
+        pad = n // 2
+        for axis in (2, 3, 4):
+            shape = [1, 1, 1, 1, 1]
+            shape[axis] = n
+            ker = k.view(shape).repeat(3, 1, 1, 1, 1)
+            p = [0, 0, 0]
+            p[axis - 2] = pad
+            vel = F.conv3d(vel, ker, padding=tuple(p), groups=3)
+        return vel
+
     def _identity_grid(self):
         theta = torch.eye(3, 4, device=self.rot.device, dtype=self.rot.dtype)[None]
         return F.affine_grid(theta, (1, 1) + tuple(self.size), align_corners=True)
@@ -95,8 +120,9 @@ class RegistrationModel(nn.Module):
         return disp
 
     def full_flow(self):
-        """把低分辨率速度/位移场上采样到全分辨率，返回 (1, D, H, W, 3)。"""
-        flow = F.interpolate(self.flow_lowres, size=tuple(self.size),
+        """把低分辨率速度/位移场（平滑后）上采样到全分辨率，返回 (1, D, H, W, 3)。"""
+        vel = self._smooth(self.flow_lowres)
+        flow = F.interpolate(vel, size=tuple(self.size),
                              mode="trilinear", align_corners=True)
         if self.diffeomorphic:
             flow = self._integrate(flow)  # 速度场 -> 微分同胚位移场

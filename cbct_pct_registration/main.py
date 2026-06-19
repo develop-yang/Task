@@ -44,9 +44,11 @@ def main():
     p.add_argument("--rigid-iters", type=int, default=300)
     p.add_argument("--deform-iters", type=int, default=300)
     p.add_argument("--ncc-win", type=int, default=9, help="LNCC 窗口边长")
-    p.add_argument("--reg-weight", type=float, default=6.0, help="形变场正则权重")
-    p.add_argument("--deform-lr", type=float, default=0.02, help="形变阶段学习率")
-    p.add_argument("--flow-downsample", type=int, default=4)
+    p.add_argument("--reg-weight", type=float, default=20.0, help="形变场正则权重")
+    p.add_argument("--deform-lr", type=float, default=0.01, help="形变阶段学习率")
+    p.add_argument("--flow-downsample", type=int, default=8, help="形变控制网格下采样(越大越平滑)")
+    p.add_argument("--smooth-sigma", type=float, default=0.8, help="速度场高斯平滑(低分辨率体素)")
+    p.add_argument("--int-steps", type=int, default=7, help="微分同胚积分步数")
     p.add_argument("--scale", action="store_true",
                    help="刚体阶段额外开启各向同性缩放(默认关闭,纯6自由度刚体)")
     p.add_argument("--bone-thresh", type=float, default=200.0,
@@ -72,21 +74,44 @@ def main():
 
     print("[3/5] PyTorch 刚体 + 形变优化 (%s) ..."
           % ("刚体+缩放+形变" if args.scale else "纯刚体6DOF+形变"))
-    model, warped, history = register(
+    model, warped, warped_rigid, history = register(
         data["moving"], data["fixed"], mask=data["mask"], device=device,
         rigid_iters=args.rigid_iters, deform_iters=args.deform_iters,
         ncc_win=args.ncc_win, reg_weight=args.reg_weight, deform_lr=args.deform_lr,
         allow_scale=args.scale, flow_downsample=args.flow_downsample,
+        smooth_sigma=args.smooth_sigma, int_steps=args.int_steps,
     )
 
-    print("[4/5] 评估指标 (含独立验证: 骨 Dice / Jacobian) ...")
-    warped_hu = warped * 2000.0 - 1000.0  # 归一化 -> HU
-    metrics = evaluate(data["moving"], data["fixed"], warped, mask=data["mask"])
-    metrics.update(bone_dice(data["moving_hu"], data["fixed_hu"], warped_hu,
-                             mask=data["mask"], thresh=args.bone_thresh))
-    metrics.update(jacobian_stats(model, mask=data["mask"]))
-    for k, v in metrics.items():
-        print("  %-22s %.5f" % (k, v))
+    print("[4/5] 评估指标 (仅刚体 / +形变, 含独立验证 骨 Dice / Jacobian) ...")
+    warped_hu = warped * 2000.0 - 1000.0          # 归一化 -> HU
+    warped_rigid_hu = warped_rigid * 2000.0 - 1000.0
+
+    def _eval(w, w_hu):
+        d = evaluate(data["moving"], data["fixed"], w, mask=data["mask"])
+        d.update(bone_dice(data["moving_hu"], data["fixed_hu"], w_hu,
+                           mask=data["mask"], thresh=args.bone_thresh))
+        return d
+
+    rigid_m = _eval(warped_rigid, warped_rigid_hu)
+    deform_m = _eval(warped, warped_hu)
+    jac = jacobian_stats(model, mask=data["mask"])
+    jac = {"min": jac["jacobian_min"], "mean": jac["jacobian_mean"],
+           "neg_fraction": jac["jacobian_neg_fraction"]}
+    deform_gain = deform_m["bone_dice_after"] - rigid_m["bone_dice_after"]
+    metrics = {
+        "rigid_only": rigid_m,
+        "deform": deform_m,
+        "jacobian": jac,
+        "deform_bone_dice_gain": deform_gain,
+        "primary": "rigid" if deform_gain < 0.01 else "rigid+deform",
+    }
+    print("  仅刚体  : 骨Dice %.3f->%.3f  LNCC %.3f->%.3f"
+          % (rigid_m["bone_dice_before"], rigid_m["bone_dice_after"],
+             rigid_m["ncc_before"], rigid_m["ncc_after"]))
+    print("  +形变   : 骨Dice ->%.3f  LNCC ->%.3f  (增益 %.3f)"
+          % (deform_m["bone_dice_after"], deform_m["ncc_after"], deform_gain))
+    print("  Jacobian: min=%.3f mean=%.3f 负值占比=%.4f%%"
+          % (jac["min"], jac["mean"], 100 * jac["neg_fraction"]))
 
     # 物理单位刚体变换（配准的核心“答案”）
     phys = rigid_to_physical(model, data["ref_origin"], data["ref_spacing"],
@@ -107,6 +132,8 @@ def main():
         "trans": model.trans.detach().cpu(),
         "log_scale": model.log_scale.detach().cpu(),
         "flow_lowres": model.flow_lowres.detach().cpu(),
+        "smooth_sigma": model.smooth_sigma,
+        "int_steps": model.int_steps,
         "ref_origin": data["ref_origin"],
         "ref_spacing": data["ref_spacing"],
         "ref_shape": data["ref_shape"],
@@ -121,14 +148,13 @@ def main():
     _write_rigid_txt(os.path.join(args.out, "rigid_transform.txt"), phys,
                      data, metrics, args)
 
-    print("\n===== 刚体配准结果 (CBCT -> pCT 摆位修正) =====")
+    print("\n===== 刚体配准结果 (CBCT -> pCT 摆位修正, 主结果) =====")
     print("  平移 (mm)  [x:L+, y:P+, z:S+] :",
           np.round(phys["translation_mm_cbct_to_pct"], 2))
     print("  旋转 (度)  [rx, ry, rz]       :",
           np.round(phys["rotation_deg_cbct_to_pct"], 2))
-    print("  骨 Dice: %.3f -> %.3f   Jacobian 负值占比: %.4f%%"
-          % (metrics["bone_dice_before"], metrics["bone_dice_after"],
-             100 * metrics["jacobian_neg_fraction"]))
+    print("  主结果:", metrics["primary"],
+          "(形变骨Dice增益 %.3f)" % metrics["deform_bone_dice_gain"])
     print("完成。结果在 %s/：overlay.png / metrics.json / rigid_transform.txt"
           % args.out)
 
@@ -160,15 +186,19 @@ def _write_rigid_txt(path, phys, data, metrics, args):
     ]
     for row in phys["matrix_cbct_to_pct"]:
         lines.append("  " + "  ".join("%10.4f" % v for v in row))
+    rg, df, jac = metrics["rigid_only"], metrics["deform"], metrics["jacobian"]
     lines += [
         "",
-        "== 验证指标 ==",
-        "LNCC      : %.4f -> %.4f" % (metrics["ncc_before"], metrics["ncc_after"]),
-        "骨 Dice   : %.4f -> %.4f (HU>%.0f, 独立于优化目标)"
-        % (metrics["bone_dice_before"], metrics["bone_dice_after"], args.bone_thresh),
+        "== 验证指标 (仅刚体 / +形变) ==",
+        "LNCC    : 仅刚体 %.4f->%.4f | +形变 ->%.4f"
+        % (rg["ncc_before"], rg["ncc_after"], df["ncc_after"]),
+        "骨 Dice : 仅刚体 %.4f->%.4f | +形变 ->%.4f (HU>%.0f, 独立于优化目标)"
+        % (rg["bone_dice_before"], rg["bone_dice_after"], df["bone_dice_after"],
+           args.bone_thresh),
         "形变 Jacobian: min=%.4f mean=%.4f 负值占比=%.4f%%"
-        % (metrics["jacobian_min"], metrics["jacobian_mean"],
-           100 * metrics["jacobian_neg_fraction"]),
+        % (jac["min"], jac["mean"], 100 * jac["neg_fraction"]),
+        "主结果: %s (形变对骨 Dice 增益 %.4f)"
+        % (metrics["primary"], metrics["deform_bone_dice_gain"]),
     ]
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")

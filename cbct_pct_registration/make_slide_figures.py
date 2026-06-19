@@ -73,20 +73,26 @@ def _jacobian_det(model):
 # 各张图
 # ---------------------------------------------------------------------------
 
-def fig_data_overview(cbct, pct, path):
-    fig, axes = plt.subplots(2, 2, figsize=(9, 8))
-    cz, cy = cbct.data.shape[0] // 2, cbct.data.shape[1] // 2
-    pz, py = pct.data.shape[0] // 2, pct.data.shape[1] // 2
-    asp_c = cbct.spacing[2] / cbct.spacing[0]
-    asp_p = pct.spacing[2] / pct.spacing[0]
-    _show(axes[0, 0], cbct.data[cz], "CBCT 轴位", aspect=1.0)
-    _show(axes[0, 1], cbct.data[:, cy, :], "CBCT 冠状位", aspect=asp_c)
-    _show(axes[1, 0], pct.data[pz], "pCT 轴位", aspect=1.0)
-    _show(axes[1, 1], pct.data[:, py, :], "pCT 冠状位", aspect=asp_p)
-    axes[0, 0].text(0.02, 0.04, "Elekta XVI  270x270x128  1.0x1.0x1.0 mm",
-                    transform=axes[0, 0].transAxes, color="white", fontsize=9)
-    axes[1, 0].text(0.02, 0.04, "Philips  512x512x112  1.16x1.16x3.0 mm",
-                    transform=axes[1, 0].transAxes, color="white", fontsize=9)
+def fig_data_overview(data, path):
+    """CBCT / pCT 各取 轴/冠/矢 三视图（公共各向同性网格，等大、统一窗宽窗位）。"""
+    mv, fx = data["moving_hu"], data["fixed_hu"]
+    names = ["轴位", "冠状位", "矢状位"]
+    rows = [("CBCT（Elekta XVI · 1.0³mm）", mv, ACCENT),
+            ("pCT（Philips · 1.16×1.16×3.0mm）", fx, SECOND)]
+    vmin, vmax = -500, 1000  # 统一窗宽窗位
+    fig, axes = plt.subplots(2, 3, figsize=(11, 7.6))
+    for r, (label, vol, color) in enumerate(rows):
+        views = _views(vol)
+        for c in range(3):
+            ax = axes[r, c]
+            ax.imshow(np.rot90(views[c]), cmap="gray", vmin=vmin, vmax=vmax,
+                      aspect=1.0)
+            ax.axis("off")
+            if r == 0:
+                ax.set_title(names[c], fontsize=14)
+        axes[r, 0].text(-0.08, 0.5, label, transform=axes[r, 0].transAxes,
+                        rotation=90, va="center", ha="center", fontsize=12,
+                        color=color)
     plt.tight_layout()
     plt.savefig(path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
@@ -217,15 +223,20 @@ def fig_metrics_bar(metrics, path):
     plt.close(fig)
 
 
-def fig_jacobian_map(det, mask, path):
+def fig_jacobian_map(det, mask, path, jac=None):
     z = det.shape[0] // 2
     sl = det[z].astype(float)
     sl[mask[z] <= 0.5] = np.nan
     fig, ax = plt.subplots(figsize=(6, 5.5))
-    im = ax.imshow(np.rot90(sl), cmap="RdBu_r", vmin=0.0, vmax=2.0)
-    ax.set_title("形变场 Jacobian 行列式（中心轴位层）\n"
-                 "绝大多数为正（负值占比0.33%）→ 近微分同胚、几乎无折叠",
-                 fontsize=11)
+    im = ax.imshow(np.rot90(sl), cmap="RdBu_r", vmin=0.5, vmax=1.5)
+    if jac and jac["neg_fraction"] <= 1e-9 and jac["min"] > 0:
+        sub = "处处为正 (min=%.2f) → 微分同胚、无折叠" % jac["min"]
+    elif jac:
+        sub = "min=%.2f，负值占比 %.2f%%" % (
+            jac["min"], 100 * jac["neg_fraction"])
+    else:
+        sub = ""
+    ax.set_title("形变场 Jacobian 行列式（中心轴位层）\n" + sub, fontsize=11)
     ax.axis("off")
     cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label("det(J)", fontsize=11)
@@ -259,25 +270,31 @@ def main():
     data = prepare_pair(cbct, pct, spacing_mm=spacing)
 
     size = data["ref_shape"]
-    model = RegistrationModel(size, diffeomorphic=True)
+    model = RegistrationModel(size, diffeomorphic=True,
+                             smooth_sigma=ckpt.get("smooth_sigma", 0.0),
+                             int_steps=ckpt.get("int_steps", 7))
     # 直接用已保存的变换覆盖参数（位移场分辨率由 ckpt 决定，上采样时自适应）
     model.rot.data = ckpt["rot"]
     model.trans.data = ckpt["trans"]
     model.flow_lowres = torch.nn.Parameter(ckpt["flow_lowres"])
     with torch.no_grad():
         mv = torch.from_numpy(data["moving"]).float()[None, None]
-        warped = model.warp(mv).numpy()[0, 0]
+        warped_rigid = model.warp(mv, use_flow=False).numpy()[0, 0]
+        warped_deform = model.warp(mv, use_flow=True).numpy()[0, 0]
     det = _jacobian_det(model)
+    # 主结果为刚体：定性图用刚体结果，形变仅在 Jacobian 图体现其合法性
+    warped_primary = warped_rigid
 
     print("生成图 ...")
-    fig_data_overview(cbct, pct, os.path.join(figdir, "data_overview.png"))
+    fig_data_overview(data, os.path.join(figdir, "data_overview.png"))
     fig_coord_offset(cbct, pct, os.path.join(figdir, "coord_offset.png"))
     fig_intensity_cupping(data, os.path.join(figdir, "intensity_cupping.png"))
     fig_zinit_xcorr(cbct, pct, os.path.join(figdir, "zinit_xcorr.png"))
-    fig_checkerboard(data, warped, os.path.join(figdir, "checkerboard.png"))
-    fig_difference(data, warped, os.path.join(figdir, "difference.png"))
-    fig_metrics_bar(metrics, os.path.join(figdir, "metrics_bar.png"))
-    fig_jacobian_map(det, data["mask"], os.path.join(figdir, "jacobian_map.png"))
+    fig_checkerboard(data, warped_primary, os.path.join(figdir, "checkerboard.png"))
+    fig_difference(data, warped_primary, os.path.join(figdir, "difference.png"))
+    fig_metrics_bar(metrics["rigid_only"], os.path.join(figdir, "metrics_bar.png"))
+    fig_jacobian_map(det, data["mask"], os.path.join(figdir, "jacobian_map.png"),
+                     jac=metrics.get("jacobian"))
     print("完成，图已写入", figdir)
 
 

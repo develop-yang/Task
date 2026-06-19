@@ -22,14 +22,17 @@ def _downsample(t, factor):
 
 def register(moving, fixed, mask=None, device="cpu",
              rigid_iters=300, deform_iters=300,
-             rigid_lr=0.01, deform_lr=0.02,
-             ncc_win=9, reg_weight=6.0, allow_scale=False,
-             flow_downsample=4, pyramid=(4, 2, 1), verbose=True):
+             rigid_lr=0.01, deform_lr=0.01,
+             ncc_win=9, reg_weight=20.0, allow_scale=False,
+             flow_downsample=8, smooth_sigma=0.8, int_steps=7,
+             pyramid=(4, 2, 1), verbose=True):
     """对公共网格上的 moving/fixed 体数据做刚体 + 形变配准。
 
     moving, fixed, mask: numpy (D, H, W)，已归一化到 [0, 1]。
     pyramid: 刚体阶段的多分辨率下采样倍数（由粗到细），用于扩大捕获范围。
-    返回 (model, warped_numpy, history)。
+    形变默认强正则 + 粗控制网格 + 速度场高斯平滑，做“小幅平滑细化”而非剧烈揉变，
+    保证 Jacobian 处处为正、无折叠。
+    返回 (model, warped_deform, warped_rigid, history)。
     """
     device = torch.device(device)
     mv = _to_tensor(moving, device)
@@ -38,7 +41,8 @@ def register(moving, fixed, mask=None, device="cpu",
 
     size = moving.shape  # (D, H, W)
     model = RegistrationModel(size, flow_downsample=flow_downsample,
-                              allow_scale=allow_scale).to(device)
+                              allow_scale=allow_scale, int_steps=int_steps,
+                              smooth_sigma=smooth_sigma).to(device)
 
     history = {"rigid": [], "deform": []}
 
@@ -62,6 +66,10 @@ def register(moving, fixed, mask=None, device="cpu",
                       % (level, it, rigid_iters, float(loss.detach())))
     model.size = size  # 恢复全分辨率
 
+    # 记录“仅刚体”结果（用于和 +形变 对照）
+    with torch.no_grad():
+        warped_rigid = model.warp(mv, use_flow=False).cpu().numpy()[0, 0]
+
     # ---------- 阶段二：形变（冻结刚体，优化位移场） ----------
     model.rot.requires_grad_(False)
     model.trans.requires_grad_(False)
@@ -82,7 +90,7 @@ def register(moving, fixed, mask=None, device="cpu",
 
     with torch.no_grad():
         warped = model.warp(mv, use_flow=True).cpu().numpy()[0, 0]
-    return model, warped, history
+    return model, warped, warped_rigid, history
 
 
 def evaluate(moving, fixed, warped, mask=None):
