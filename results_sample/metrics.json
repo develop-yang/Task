@@ -20,6 +20,7 @@
     "mean": 0.9293047835469966,
     "neg_fraction": 0.0
   },
+  "jacobian_clean": true,
   "deform_bone_dice_gain": 0.042856829059571555,
-  "primary": "rigid+deform"
+  "primary": "刚体为主结果，形变为受控的小幅细化（Jacobian 全正、无折叠）"
 }
