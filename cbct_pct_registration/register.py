@@ -23,7 +23,7 @@ def _downsample(t, factor):
 def register(moving, fixed, mask=None, device="cpu",
              rigid_iters=300, deform_iters=300,
              rigid_lr=0.01, deform_lr=0.02,
-             ncc_win=9, reg_weight=3.0, allow_scale=False,
+             ncc_win=9, reg_weight=6.0, allow_scale=False,
              flow_downsample=4, pyramid=(4, 2, 1), verbose=True):
     """对公共网格上的 moving/fixed 体数据做刚体 + 形变配准。
 

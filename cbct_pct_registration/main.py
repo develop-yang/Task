@@ -44,7 +44,7 @@ def main():
     p.add_argument("--rigid-iters", type=int, default=300)
     p.add_argument("--deform-iters", type=int, default=300)
     p.add_argument("--ncc-win", type=int, default=9, help="LNCC 窗口边长")
-    p.add_argument("--reg-weight", type=float, default=3.0, help="形变场正则权重")
+    p.add_argument("--reg-weight", type=float, default=6.0, help="形变场正则权重")
     p.add_argument("--deform-lr", type=float, default=0.02, help="形变阶段学习率")
     p.add_argument("--flow-downsample", type=int, default=4)
     p.add_argument("--scale", action="store_true",

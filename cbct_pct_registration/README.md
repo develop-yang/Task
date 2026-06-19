@@ -62,7 +62,7 @@ python -m cbct_pct_registration.main \
 | `--rigid-iters` | 300 | 刚体阶段每个分辨率层的迭代数 |
 | `--deform-iters` | 300 | 形变阶段迭代数 |
 | `--ncc-win` | 9 | 局部归一化互相关 (LNCC) 窗口边长 |
-| `--reg-weight` | 3.0 | 形变场平滑正则权重，越大形变越平滑、折叠越少 |
+| `--reg-weight` | 6.0 | 形变场平滑正则权重，越大形变越平滑、折叠越少 |
 | `--deform-lr` | 0.02 | 形变阶段学习率 |
 | `--scale` | 关 | 额外开启各向同性缩放（默认纯 6 自由度刚体） |
 | `--bone-thresh` | 200 | 骨 Dice 的 HU 阈值 |
