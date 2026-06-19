@@ -57,14 +57,17 @@ def load_series(folder):
             uniq.append(s)
     sl = uniq
 
+    print("  %s: %d 文件 -> %d 层" % (os.path.basename(folder.rstrip("/\\")),
+                                     len(files), len(sl)))
+
     vol = np.stack([s.pixel_array.astype(np.float32) * float(getattr(s, "RescaleSlope", 1.0))
                     + float(getattr(s, "RescaleIntercept", 0.0)) for s in sl])
 
     ps = [float(v) for v in sl[0].PixelSpacing]               # [row(y), col(x)]
     zs = np.array([float(s.ImagePositionPatient[2]) for s in sl])
-    dz = float(np.median(np.diff(zs))) if len(zs) > 1 else 1.0
-    if dz == 0:                                               # 兜底，避免除零
-        dz = float(getattr(sl[0], "SliceThickness", 1.0)) or 1.0
+    diffs = np.diff(zs)
+    diffs = diffs[diffs > 0]                                  # 只取正间距，避免重复层把中位数拖成 0
+    dz = float(np.median(diffs)) if diffs.size else float(getattr(sl[0], "SliceThickness", 1.0)) or 1.0
     origin = [float(v) for v in sl[0].ImagePositionPatient]
 
     iop = [float(v) for v in sl[0].ImageOrientationPatient]
