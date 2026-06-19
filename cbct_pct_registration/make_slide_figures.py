@@ -28,8 +28,9 @@ plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei"]
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.facecolor"] = "white"
 plt.rcParams["savefig.facecolor"] = "white"
-ACCENT = "#1b3b6f"   # 深蓝（强调色）
-SECOND = "#5a5a5a"   # 深灰（对照）
+ACCENT = "#1F3B6E"   # 深蓝（强调色）
+SECOND = "#6B7280"   # 次级灰
+BEFORE = "#9CA3AF"   # 配准前统一灰
 DPI = 170
 
 
@@ -211,7 +212,7 @@ def fig_metrics_bar(metrics, path):
         ("ncc_before", "ncc_after", "LNCC（优化目标）"),
         ("bone_dice_before", "bone_dice_after", "骨结构 Dice（独立验证）")]):
         vals = [metrics[key_b], metrics[key_a]]
-        bars = ax.bar(["配准前", "配准后"], vals, color=[SECOND, ACCENT], width=0.55)
+        bars = ax.bar(["配准前", "配准后"], vals, color=[BEFORE, ACCENT], width=0.55)
         for b, v in zip(bars, vals):
             ax.text(b.get_x() + b.get_width() / 2, v + 0.02, "%.3f" % v,
                     ha="center", fontsize=12)

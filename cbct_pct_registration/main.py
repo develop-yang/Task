@@ -98,12 +98,18 @@ def main():
     jac = {"min": jac["jacobian_min"], "mean": jac["jacobian_mean"],
            "neg_fraction": jac["jacobian_neg_fraction"]}
     deform_gain = deform_m["bone_dice_after"] - rigid_m["bone_dice_after"]
+    jac_clean = jac["neg_fraction"] <= 1e-9 and jac["min"] > 0
+    primary = ("刚体为主结果，形变为受控的小幅细化（Jacobian 全正、无折叠）"
+               if jac_clean else
+               "刚体为主结果，形变仅作小幅细化（Jacobian min=%.2f、负值%.2f%%）"
+               % (jac["min"], 100 * jac["neg_fraction"]))
     metrics = {
         "rigid_only": rigid_m,
         "deform": deform_m,
         "jacobian": jac,
+        "jacobian_clean": jac_clean,
         "deform_bone_dice_gain": deform_gain,
-        "primary": "rigid" if deform_gain < 0.01 else "rigid+deform",
+        "primary": primary,
     }
     print("  仅刚体  : 骨Dice %.3f->%.3f  LNCC %.3f->%.3f"
           % (rigid_m["bone_dice_before"], rigid_m["bone_dice_after"],
