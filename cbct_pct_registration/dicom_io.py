@@ -56,14 +56,28 @@ def _decode(ds):
 
 def load_series(folder):
     """读取一个 DICOM 序列目录，返回 :class:`Volume`（HU 体数据）。"""
-    files = glob.glob(os.path.join(folder, "*.DCM")) + \
-        glob.glob(os.path.join(folder, "*.dcm"))
+    # Windows 文件系统大小写不敏感，*.DCM 与 *.dcm 会匹配同一批文件，
+    # 按真实路径去重，避免切片被读两遍把层间距污染成 0
+    seen = {}
+    for pat in ("*.dcm", "*.DCM"):
+        for f in glob.glob(os.path.join(folder, pat)):
+            seen[os.path.normcase(os.path.realpath(f))] = f
+    files = list(seen.values())
     if not files:
         raise FileNotFoundError("目录下没有找到 DICOM 文件: %s" % folder)
 
     slices = [_decode(pydicom.dcmread(f, force=True)) for f in files]
     # 按层位置 z 升序排列，保证 z 间距为正
     slices.sort(key=lambda d: float(d.ImagePositionPatient[2]))
+
+    # 按 z 去重，防止重复层把层间距污染成 0
+    uniq, zset = [], set()
+    for s in slices:
+        zr = round(float(s.ImagePositionPatient[2]), 3)
+        if zr not in zset:
+            zset.add(zr)
+            uniq.append(s)
+    slices = uniq
 
     vol = np.stack([
         s.pixel_array.astype(np.float32) * float(getattr(s, "RescaleSlope", 1.0))
@@ -75,6 +89,8 @@ def load_series(folder):
     spacing_x, spacing_y = ps[1], ps[0]
     zs = np.array([float(s.ImagePositionPatient[2]) for s in slices])
     spacing_z = float(np.median(np.diff(zs))) if len(zs) > 1 else 1.0
+    if spacing_z == 0:
+        spacing_z = float(getattr(slices[0], "SliceThickness", 1.0)) or 1.0
 
     origin = [float(v) for v in slices[0].ImagePositionPatient]  # (x, y, z)
     iop = [float(v) for v in slices[0].ImageOrientationPatient]

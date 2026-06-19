@@ -38,12 +38,27 @@ def _fix_meta(ds):
 
 
 def load_series(folder):
-    files = glob.glob(os.path.join(folder, "*.DCM")) + glob.glob(os.path.join(folder, "*.dcm"))
+    # Windows 文件系统大小写不敏感，*.DCM 和 *.dcm 会匹配到同一批文件，
+    # 这里按真实路径去重，避免切片被读两遍导致层间距算成 0
+    seen = {}
+    for pat in ("*.dcm", "*.DCM"):
+        for f in glob.glob(os.path.join(folder, pat)):
+            seen[os.path.normcase(os.path.realpath(f))] = f
+    files = list(seen.values())
     if not files:
         raise FileNotFoundError("没找到 DICOM: " + folder)
 
     sl = [_fix_meta(pydicom.dcmread(f, force=True)) for f in files]
     sl.sort(key=lambda d: float(d.ImagePositionPatient[2]))   # 按层位置 z 升序
+
+    # 按 z 去重，防止重复层把层间距污染成 0
+    uniq, zset = [], set()
+    for s in sl:
+        zr = round(float(s.ImagePositionPatient[2]), 3)
+        if zr not in zset:
+            zset.add(zr)
+            uniq.append(s)
+    sl = uniq
 
     vol = np.stack([s.pixel_array.astype(np.float32) * float(getattr(s, "RescaleSlope", 1.0))
                     + float(getattr(s, "RescaleIntercept", 0.0)) for s in sl])
@@ -51,6 +66,8 @@ def load_series(folder):
     ps = [float(v) for v in sl[0].PixelSpacing]               # [row(y), col(x)]
     zs = np.array([float(s.ImagePositionPatient[2]) for s in sl])
     dz = float(np.median(np.diff(zs))) if len(zs) > 1 else 1.0
+    if dz == 0:                                               # 兜底，避免除零
+        dz = float(getattr(sl[0], "SliceThickness", 1.0)) or 1.0
     origin = [float(v) for v in sl[0].ImagePositionPatient]
 
     iop = [float(v) for v in sl[0].ImageOrientationPatient]
